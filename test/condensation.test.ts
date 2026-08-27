@@ -96,6 +96,66 @@ test("adds an accurately measured diagnostic tag", async () => {
   );
 });
 
+test("accepts empty reasoning as a valid nothing-to-retain outcome", async () => {
+  const config = testConfig();
+  const estimator = new CharacterTokenEstimator(1);
+  const client = new FakeChatClient({
+    choices: [{ message: { content: '{"reasoning":""}' } }],
+  });
+  const condenser = new ReasoningCondenser(
+    config,
+    client,
+    new ReasoningCondensationPolicy(config, estimator),
+    estimator,
+  );
+  const original = completedTurn("Exploratory reasoning. ".repeat(20));
+
+  const outcome = await condenser.condense(original);
+
+  assert.equal(outcome.status, "condensed");
+  assert.equal(outcome.turn.reasoning, "");
+  assert.equal(outcome.delivered_reasoning_tokens, 0);
+  assert.equal(outcome.original_reasoning_tokens, estimator.estimate(original.reasoning));
+});
+
+test("trims whitespace-only reasoning to the empty outcome", async () => {
+  const config = testConfig();
+  const estimator = new CharacterTokenEstimator(1);
+  const client = new FakeChatClient({
+    choices: [{ message: { content: '{"reasoning":"  \\n  "}' } }],
+  });
+  const condenser = new ReasoningCondenser(
+    config,
+    client,
+    new ReasoningCondensationPolicy(config, estimator),
+    estimator,
+  );
+
+  const outcome = await condenser.condense(completedTurn("Exploratory reasoning. ".repeat(20)));
+
+  assert.equal(outcome.status, "condensed");
+  assert.equal(outcome.turn.reasoning, "");
+  assert.equal(outcome.delivered_reasoning_tokens, 0);
+});
+
+test("rejects a non-string reasoning property", async () => {
+  const config = testConfig();
+  const estimator = new CharacterTokenEstimator(1);
+  const condenser = new ReasoningCondenser(
+    config,
+    new FakeChatClient({ choices: [{ message: { content: '{"reasoning":42}' } }] }),
+    new ReasoningCondensationPolicy(config, estimator),
+    estimator,
+  );
+  const original = completedTurn("Important reasoning. ".repeat(20));
+
+  const outcome = await condenser.condense(original);
+
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.turn, original);
+  assert.match(outcome.error ?? "", /must be a string/);
+});
+
 test("returns the original reasoning when the condenser fails", async () => {
   const config = testConfig();
   const estimator = new CharacterTokenEstimator(1);

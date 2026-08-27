@@ -77,6 +77,7 @@ Requirements:
 - Do not introduce any fact, conclusion, action, tool call, identifier, or result.
 - Do not modify or reproduce tool-call JSON.
 - Keep the reasoning value within replacement_reasoning_token_budget. Prefer one compact sentence when it is sufficient.
+- If nothing is worth retaining, return an empty string for the reasoning property.
 - Write compact plain text inside the JSON property. Do not use Markdown fences.`;
 
 const condenserRequest = (
@@ -119,9 +120,10 @@ const parseCondensedReasoning = (content: string | null | undefined): string => 
     throw new Error("Condenser response did not contain a reasoning property");
   }
   const reasoning = (parsed as { reasoning?: unknown }).reasoning;
-  if (typeof reasoning !== "string" || reasoning.trim() === "") {
-    throw new Error("Condenser returned empty reasoning");
+  if (typeof reasoning !== "string") {
+    throw new Error("Condenser reasoning property must be a string");
   }
+  // An empty value is a valid "nothing to retain" outcome, not an error.
   return reasoning.trim();
 };
 
