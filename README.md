@@ -349,4 +349,4 @@ The request adapters cover text and tool-use content used by coding sessions. Im
 
 The router is not intended to proxy real Anthropic model endpoints.
 
-See [`docs/design.md`](docs/design.md) for internal contracts and extension points. The deployment-site handoff is in [`docs/deployment_agent_readme.md`](docs/deployment_agent_readme.md).
+See [`docs/design.md`](docs/design.md) for internal contracts and extension points. The deployment-site handoff is in [`docs/deployment_agent_readme.md`](docs/deployment_agent_readme.md). The proposed pre-final generation redesign is recorded in [`docs/pre_final_condensation_handover.md`](docs/pre_final_condensation_handover.md).
