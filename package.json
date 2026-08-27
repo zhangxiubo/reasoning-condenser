@@ -2,6 +2,7 @@
   "name": "reasoning-condenser",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "A protocol-compatible proxy that condenses preserved model reasoning before coding agents store it.",
   "repository": {
     "type": "git",
