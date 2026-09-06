@@ -1,210 +1,151 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyLoopBreaker, LoopBreakerState } from "../src/loop_breaker.ts";
-import type { OpenAiChatMessage, OpenAiChatRequest, OpenAiToolCall } from "../src/types.ts";
+import { LoopBreakerState } from "../src/loop_breaker.ts";
+import type { NormalizedHistory } from "../src/normalized_history.ts";
+import type { OpenAiChatRequest } from "../src/types.ts";
 
-const STATIC_LOG = "step 3/50 done\nstep 4/50 done\nstep 5/50 done\n";
-const CFG = { enabled: true, threshold: 3, max_injections: 3, decay_after_clean: 2 };
+const CONFIG = { enabled: true, threshold: 3, max_injections: 3, decay_after_clean: 2 };
 const TOOLS = [{ type: "function" as const, function: { name: "bash", parameters: {} } }];
 
-const toolCall = (id: string, name: string, args: string): OpenAiToolCall[] => [
-  { id, type: "function", function: { name, arguments: args } },
-];
+const stalledHistory = (conversation_id = "conv"): NormalizedHistory => ({
+  conversation_id,
+  awaiting_tool_decision: true,
+  turns: Array.from({ length: 3 }, () => ({
+    tool_sig: '["bash"]',
+    call_sig: '[["bash","tail"]]',
+    result_sig: '["same"]',
+  })),
+});
 
-// N poll turns with the SAME call and the SAME static result, ending on a tool result.
-const identicalPolls = (n: number, args = `{"command":"tail -5 /tmp/job.log"}`): OpenAiChatMessage[] => {
-  const messages: OpenAiChatMessage[] = [];
-  for (let i = 1; i <= n; i += 1) {
-    messages.push({ role: "assistant", content: "", tool_calls: toolCall(`c${i}`, "bash", args) });
-    messages.push({ role: "tool", tool_call_id: `c${i}`, content: STATIC_LOG });
-  }
-  return messages;
-};
+const cleanHistory = (conversation_id = "conv"): NormalizedHistory => ({
+  conversation_id,
+  awaiting_tool_decision: true,
+  turns: [{ tool_sig: '["bash"]', call_sig: '[["bash","one"]]', result_sig: '["a"]' }],
+});
 
-const request = (messages: OpenAiChatMessage[]): OpenAiChatRequest => ({
-  model: "test-model",
+const request = (extra: Partial<OpenAiChatRequest> = {}): OpenAiChatRequest => ({
+  model: "m",
   stream: false,
-  max_tokens: 1024,
-  messages,
+  messages: [
+    { role: "user", content: "Monitor the job." },
+    { role: "tool", tool_call_id: "c1", content: "step 5/50 done" },
+  ],
+  ...extra,
 });
 
-test("1. non-stalled history (distinct calls AND distinct results) -> no injection, length unchanged", () => {
-  const messages: OpenAiChatMessage[] = [
-    { role: "system", content: "You are a coding assistant with a bash tool." },
-    { role: "user", content: "Check the job." },
-    { role: "assistant", content: "", tool_calls: toolCall("a", "bash", `{"command":"tail -1 /tmp/job.log"}`) },
-    { role: "tool", tool_call_id: "a", content: "line1" },
-    { role: "assistant", content: "", tool_calls: toolCall("b", "bash", `{"command":"tail -2 /tmp/job.log"}`) },
-    { role: "tool", tool_call_id: "b", content: "line2" },
-    { role: "assistant", content: "", tool_calls: toolCall("c", "bash", `{"command":"tail -3 /tmp/job.log"}`) },
-    { role: "tool", tool_call_id: "c", content: "line3" },
-  ];
-  const result = applyLoopBreaker(request(messages), CFG);
-  assert.equal(result.injected, false);
-  assert.equal(result.stallCount, 1);
-  assert.equal(result.request.messages.length, messages.length);
-});
+test("a stalled history appends exactly one notice", () => {
+  const result = new LoopBreakerState().apply(request(), stalledHistory(), CONFIG);
 
-test("2. 3 identical tool calls -> injected, exactly one notice, stallCount=3, repeated_call", () => {
-  const messages = identicalPolls(3);
-  const result = applyLoopBreaker(request(messages), CFG);
   assert.equal(result.injected, true);
-  assert.equal(result.stallCount, 3);
-  assert.equal(result.reason, "repeated_call");
-  assert.equal(result.request.messages.length, messages.length + 1);
-  const notices = result.request.messages.filter(
-    (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("Operator notice"),
-  );
-  assert.equal(notices.length, 1);
-  const last = result.request.messages[result.request.messages.length - 1]!;
-  assert.equal(last.role, "user");
-  assert.match(String(last.content), /3 consecutive tool calls/);
-});
-
-test("3. 3 identical RESULTS with DIFFERENT calls -> injected, unchanged_result", () => {
-  const messages: OpenAiChatMessage[] = [];
-  for (let i = 1; i <= 3; i += 1) {
-    messages.push({ role: "assistant", content: "", tool_calls: toolCall(`d${i}`, "bash", `{"command":"cmd${i}"}`) });
-    messages.push({ role: "tool", tool_call_id: `d${i}`, content: STATIC_LOG });
-  }
-  const result = applyLoopBreaker(request(messages), CFG);
-  assert.equal(result.injected, true);
-  assert.equal(result.stallCount, 3);
+  assert.equal(result.level, 1);
+  assert.equal(result.hard_stop, false);
+  assert.equal(result.stall_count, 3);
   assert.equal(result.reason, "unchanged_result");
+  assert.equal(result.request.messages.length, 3);
+  assert.match(String(result.request.messages.at(-1)?.content), /Operator notice/);
 });
 
-test("4. only 2 identical calls (below threshold) -> no injection", () => {
-  const result = applyLoopBreaker(request(identicalPolls(2)), CFG);
+test("a clean history injects nothing", () => {
+  const result = new LoopBreakerState().apply(request(), cleanHistory(), CONFIG);
+
   assert.equal(result.injected, false);
-  assert.equal(result.stallCount, 2);
+  assert.equal(result.request.messages.length, 2);
 });
 
-test("5. enabled=false on a stalled history -> no injection", () => {
-  const result = applyLoopBreaker(request(identicalPolls(3)), {
+test("nothing is injected when the model is not awaiting a tool decision", () => {
+  const history = { ...stalledHistory(), awaiting_tool_decision: false };
+  const result = new LoopBreakerState().apply(request(), history, CONFIG);
+
+  assert.equal(result.injected, false);
+});
+
+test("nothing is injected when the breaker is disabled", () => {
+  const result = new LoopBreakerState().apply(request(), stalledHistory(), {
+    ...CONFIG,
     enabled: false,
-    threshold: 3,
-    max_injections: 3,
-    decay_after_clean: 2,
   });
+
   assert.equal(result.injected, false);
-  assert.equal(result.request.messages.length, 6);
 });
 
-test("6. history ending in an assistant text message -> no crash, no injection", () => {
-  const messages: OpenAiChatMessage[] = [...identicalPolls(3), { role: "assistant", content: "Let me report the status." }];
-  const result = applyLoopBreaker(request(messages), CFG);
-  assert.equal(result.injected, false);
-  assert.equal(result.request.messages.length, messages.length);
+test("the input request is never mutated", () => {
+  const original = request({ tools: TOOLS });
+  const snapshot = structuredClone(original);
+
+  new LoopBreakerState().apply(original, stalledHistory(), CONFIG);
+
+  assert.deepEqual(original, snapshot);
 });
 
-test("7. parallel tool_calls (2 per turn, repeated 3x) -> handled, injected", () => {
-  const twoCalls = (prefix: string): OpenAiToolCall[] => [
-    { id: `${prefix}_1`, type: "function", function: { name: "bash", arguments: `{"command":"cat a"}` } },
-    { id: `${prefix}_2`, type: "function", function: { name: "bash", arguments: `{"command":"cat b"}` } },
-  ];
-  const messages: OpenAiChatMessage[] = [];
-  for (let i = 1; i <= 3; i += 1) {
-    messages.push({ role: "assistant", content: "", tool_calls: twoCalls(`p${i}`) });
-    messages.push({ role: "tool", tool_call_id: `p${i}_1`, content: "A" });
-    messages.push({ role: "tool", tool_call_id: `p${i}_2`, content: "B" });
+test("escalation runs notice, warning, then hard stop", () => {
+  const breaker = new LoopBreakerState();
+
+  const first = breaker.apply(request({ tools: TOOLS }), stalledHistory(), CONFIG);
+  const second = breaker.apply(request({ tools: TOOLS }), stalledHistory(), CONFIG);
+  const third = breaker.apply(request({ tools: TOOLS }), stalledHistory(), CONFIG);
+
+  assert.match(String(first.request.messages.at(-1)?.content), /Operator notice/);
+  assert.match(String(second.request.messages.at(-1)?.content), /Operator warning/);
+  assert.match(String(third.request.messages.at(-1)?.content), /Operator hard stop/);
+  assert.equal(third.hard_stop, true);
+});
+
+test("the hard stop removes every tool affordance together", () => {
+  const breaker = new LoopBreakerState();
+  const withTools = () =>
+    request({ tools: TOOLS, tool_choice: "required", parallel_tool_calls: true });
+
+  breaker.apply(withTools(), stalledHistory(), CONFIG);
+  breaker.apply(withTools(), stalledHistory(), CONFIG);
+  const third = breaker.apply(withTools(), stalledHistory(), CONFIG);
+
+  assert.equal(third.hard_stop, true);
+  assert.equal("tools" in third.request, false);
+  assert.equal("tool_choice" in third.request, false);
+  assert.equal("parallel_tool_calls" in third.request, false);
+  assert.equal(third.request.model, "m");
+});
+
+test("a notice never claims tools were removed while they are still present", () => {
+  const breaker = new LoopBreakerState();
+
+  const first = breaker.apply(request({ tools: TOOLS }), stalledHistory(), CONFIG);
+  const second = breaker.apply(request({ tools: TOOLS }), stalledHistory(), CONFIG);
+
+  for (const result of [first, second]) {
+    assert.equal(result.hard_stop, false);
+    assert.equal(result.request.tools, TOOLS);
+    assert.doesNotMatch(String(result.request.messages.at(-1)?.content), /removed|cannot call tools/);
   }
-  const result = applyLoopBreaker(request(messages), CFG);
-  assert.equal(result.injected, true);
-  assert.equal(result.stallCount, 3);
-  assert.equal(result.request.messages.length, messages.length + 1);
 });
 
-test("8. input request is NOT mutated (deep-compare before/after)", () => {
-  const messages = identicalPolls(3);
-  const req = request(messages);
-  const before = structuredClone(req);
-  const result = applyLoopBreaker(req, CFG);
-  assert.equal(result.injected, true);
-  assert.deepEqual(req, before);
-  assert.notEqual(result.request, req);
-  assert.notEqual(result.request.messages, req.messages);
-  assert.equal(req.messages.length, 6);
-});
-
-test("9. A-B-A-B alternation (period-2 loop) -> injected, alternating_calls", () => {
-  const messages: OpenAiChatMessage[] = [];
-  for (let i = 1; i <= 4; i += 1) {
-    const name = i % 2 === 1 ? "cmdA" : "cmdB";
-    const result = i % 2 === 1 ? "resultA" : "resultB";
-    messages.push({ role: "assistant", content: "", tool_calls: toolCall(`e${i}`, "bash", `{"command":"${name}"}`) });
-    messages.push({ role: "tool", tool_call_id: `e${i}`, content: result });
-  }
-  const result = applyLoopBreaker(request(messages), CFG);
-  assert.equal(result.injected, true);
-  assert.equal(result.reason, "alternating_calls");
-  assert.equal(result.stallCount, 4);
-});
-
-test("10. escalation: notice -> warning -> hard stop (tools stripped)", () => {
+test("escalation is per conversation", () => {
   const breaker = new LoopBreakerState();
-  const messages = identicalPolls(3);
 
-  const first = breaker.apply({ ...request(messages), tools: TOOLS }, CFG);
-  assert.equal(first.injected, true);
-  assert.equal(first.level, 1);
-  assert.equal(first.hardStop, false);
-  assert.match(String(first.request.messages.at(-1)!.content), /Operator notice/);
-  assert.equal(first.request.tools, TOOLS);
+  breaker.apply(request(), stalledHistory("a"), CONFIG);
+  breaker.apply(request(), stalledHistory("a"), CONFIG);
 
-  const second = breaker.apply({ ...request(messages), tools: TOOLS }, CFG);
-  assert.equal(second.injected, true);
-  assert.equal(second.level, 2);
-  assert.equal(second.hardStop, false);
-  assert.match(String(second.request.messages.at(-1)!.content), /Operator warning/);
-
-  const third = breaker.apply({ ...request(messages), tools: TOOLS }, CFG);
-  assert.equal(third.injected, true);
-  assert.equal(third.level, 3);
-  assert.equal(third.hardStop, true);
-  assert.match(String(third.request.messages.at(-1)!.content), /hard stop/);
-  assert.equal(third.request.tools, undefined);
+  assert.equal(breaker.apply(request(), stalledHistory("b"), CONFIG).level, 1);
 });
 
-test("11. escalation is per-conversation: a different conversation starts at level 1", () => {
+test("recovery walks the level back down", () => {
   const breaker = new LoopBreakerState();
-  const base = identicalPolls(3);
-  const convA: OpenAiChatRequest = {
-    ...request(base),
-    messages: [{ role: "user", content: "Task A: monitor the job." }, ...base],
-  };
-  const convB: OpenAiChatRequest = {
-    ...request(base),
-    messages: [{ role: "user", content: "A different task entirely." }, ...base],
-  };
 
-  breaker.apply(convA, CFG);
-  breaker.apply(convA, CFG);
-  const aThird = breaker.apply(convA, CFG);
-  assert.equal(aThird.hardStop, true);
+  breaker.apply(request(), stalledHistory(), CONFIG);
+  breaker.apply(request(), stalledHistory(), CONFIG);
+  breaker.apply(request(), cleanHistory(), CONFIG);
+  breaker.apply(request(), cleanHistory(), CONFIG);
 
-  const bFirst = breaker.apply(convB, CFG);
-  assert.equal(bFirst.level, 1);
-  assert.equal(bFirst.hardStop, false);
+  assert.equal(breaker.apply(request(), stalledHistory(), CONFIG).level, 2);
 });
 
-test("12. hard stop with no tools field: still injected, no crash", () => {
-  const breaker = new LoopBreakerState();
-  const messages = identicalPolls(3);
-  breaker.apply(request(messages), CFG);
-  breaker.apply(request(messages), CFG);
-  const third = breaker.apply(request(messages), CFG);
-  assert.equal(third.injected, true);
-  assert.equal(third.hardStop, true);
-  assert.equal(third.request.tools, undefined);
-});
+test("a max_injections of one removes tool affordances immediately", () => {
+  const result = new LoopBreakerState().apply(request({ tools: TOOLS }), stalledHistory(), {
+    ...CONFIG,
+    max_injections: 1,
+  });
 
-test("13. below-threshold requests do not consume escalation budget", () => {
-  const breaker = new LoopBreakerState();
-  const stalled = identicalPolls(3);
-  const notStalled = identicalPolls(2);
-
-  breaker.apply(request(notStalled), CFG);
-  const first = breaker.apply(request(stalled), CFG);
-  assert.equal(first.level, 1);
-  assert.equal(first.hardStop, false);
+  assert.equal(result.hard_stop, true);
+  assert.equal("tools" in result.request, false);
+  assert.match(String(result.request.messages.at(-1)?.content), /Operator hard stop/);
 });
