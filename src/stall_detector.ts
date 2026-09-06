@@ -21,16 +21,14 @@ const identical: Match = (older, newer) =>
  * turn `period` steps ahead of it, walking backwards. `period` 1 is
  * adjacent-turn repetition; `period` 2 is a two-state alternation.
  *
- * A period-2 run whose trailing pair is itself `identical` is plain
- * repetition, not a cycle — a real cycle needs its two states to differ.
- * That case is left for a period-1 signal to describe instead.
+ * Periodicity at period 1 implies periodicity at period 2, so a run of
+ * plain repetition genuinely is a period-2 run too. Which signal reports it
+ * is decided by table order and minimum run, not by anything special-cased
+ * here.
  */
 const periodicRun = (turns: HistoryTurn[], period: number, match: Match): number => {
   const count = turns.length;
   if (count < period) {
-    return 0;
-  }
-  if (period === 2 && identical(turns[count - 2]!, turns[count - 1]!)) {
     return 0;
   }
   let run = period;

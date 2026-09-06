@@ -57,10 +57,17 @@ test("below the threshold nothing is reported", () => {
   assert.equal(detectStall([], 3), null);
 });
 
-test("plain repetition is not misread as alternation", () => {
-  const verdict = detectStall(repeat(6, () => turn("bash", "tail", "same")), 10);
+// Six identical turns clear alternating_calls's own minimum run too (it
+// needs 4, this run is 6), so what actually keeps this from being reported
+// as alternating_calls is that unchanged_result is listed first in the
+// signal table and wins the tie. This pins that ordering — not a guard
+// inside the run counter, there isn't one — so a future reorder that put
+// alternating_calls ahead of unchanged_result would be caught here.
+test("plain repetition reports unchanged_result, not alternating_calls — pins signal table order", () => {
+  const verdict = detectStall(repeat(6, () => turn("bash", "tail", "same")), 3);
 
-  assert.notEqual(verdict?.reason, "alternating_calls");
+  assert.equal(verdict?.reason, "unchanged_result");
+  assert.equal(verdict?.count, 6);
 });
 
 test("a single turn is never a stall, even at the lowest threshold", () => {
