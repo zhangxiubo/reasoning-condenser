@@ -13,14 +13,29 @@ export interface StallVerdict {
 
 type Match = (older: HistoryTurn, newer: HistoryTurn) => boolean;
 
-/** Length of the trailing run over which `match` holds between neighbours. */
-const trailingRun = (turns: HistoryTurn[], match: Match): number => {
-  if (turns.length === 0) {
+const identical: Match = (older, newer) =>
+  older.call_sig === newer.call_sig && older.result_sig === newer.result_sig;
+
+/**
+ * Length of the trailing run in which `match` holds between a turn and the
+ * turn `period` steps ahead of it, walking backwards. `period` 1 is
+ * adjacent-turn repetition; `period` 2 is a two-state alternation.
+ *
+ * A period-2 run whose trailing pair is itself `identical` is plain
+ * repetition, not a cycle — a real cycle needs its two states to differ.
+ * That case is left for a period-1 signal to describe instead.
+ */
+const periodicRun = (turns: HistoryTurn[], period: number, match: Match): number => {
+  const count = turns.length;
+  if (count < period) {
     return 0;
   }
-  let run = 1;
-  for (let index = turns.length - 2; index >= 0; index -= 1) {
-    if (!match(turns[index]!, turns[index + 1]!)) {
+  if (period === 2 && identical(turns[count - 2]!, turns[count - 1]!)) {
+    return 0;
+  }
+  let run = period;
+  for (let index = count - period - 1; index >= 0; index -= 1) {
+    if (!match(turns[index]!, turns[index + period]!)) {
       break;
     }
     run += 1;
@@ -28,32 +43,12 @@ const trailingRun = (turns: HistoryTurn[], match: Match): number => {
   return run;
 };
 
-const identical: Match = (older, newer) =>
-  older.call_sig === newer.call_sig && older.result_sig === newer.result_sig;
-
-/**
- * Length of a trailing period-2 alternation (A-B-A-B). Neighbours must differ,
- * otherwise the run is plain repetition and a different signal describes it.
- */
-const alternationRun = (turns: HistoryTurn[]): number => {
-  const count = turns.length;
-  if (count < 4 || identical(turns[count - 2]!, turns[count - 1]!)) {
-    return 0;
-  }
-  let run = 2;
-  for (let index = count - 3; index >= 0; index -= 1) {
-    if (!identical(turns[index]!, turns[index + 2]!)) {
-      break;
-    }
-    run += 1;
-  }
-  return run >= 4 ? run : 0;
-};
-
 interface Signal {
   reason: StallReason;
+  /** Turns between the two ends of one comparison: 1 for repetition, 2 for alternation. */
+  period: number;
+  match: Match;
   minimum: (threshold: number) => number;
-  run: (turns: HistoryTurn[]) => number;
 }
 
 /**
@@ -67,39 +62,49 @@ interface Signal {
 const SIGNALS: readonly Signal[] = [
   {
     reason: "unchanged_result",
+    period: 1,
+    match: identical,
     minimum: (threshold) => threshold,
-    run: (turns) => trailingRun(turns, identical),
   },
   {
     reason: "repeated_call",
+    period: 1,
+    match: (older, newer) => older.call_sig === newer.call_sig,
     minimum: (threshold) => threshold,
-    run: (turns) => trailingRun(turns, (older, newer) => older.call_sig === newer.call_sig),
   },
   {
     reason: "variant_thrash",
+    period: 1,
+    match: (older, newer) =>
+      older.tool_sig === newer.tool_sig &&
+      older.result_sig === newer.result_sig &&
+      older.call_sig !== newer.call_sig,
     minimum: (threshold) => threshold + 2,
-    run: (turns) =>
-      trailingRun(
-        turns,
-        (older, newer) =>
-          older.tool_sig === newer.tool_sig &&
-          older.result_sig === newer.result_sig &&
-          older.call_sig !== newer.call_sig,
-      ),
   },
   {
     reason: "alternating_calls",
+    period: 2,
+    match: identical,
     minimum: (threshold) => threshold,
-    run: alternationRun,
   },
 ];
+
+/**
+ * A run must be at least twice its period to demonstrate a repeat at all: a
+ * period-2 cycle cannot be shown in fewer than two full cycles, and a
+ * period-1 repeat needs at least one comparison to have been made. This floor
+ * combines with each signal's own threshold-derived minimum.
+ */
+const effectiveMinimum = (signal: Signal, threshold: number): number =>
+  Math.max(signal.minimum(threshold), 2 * signal.period);
 
 /** Longest run any signal can consult, plus one turn to prove the run ended. */
 export const historyTurnLimit = (threshold: number): number => Math.max(threshold + 2, 4) + 1;
 
 export const detectStall = (turns: HistoryTurn[], threshold: number): StallVerdict | null => {
-  const hit = SIGNALS.map((signal) => ({ signal, run: signal.run(turns) })).find(
-    ({ signal, run }) => run >= signal.minimum(threshold) && run > 1,
-  );
+  const hit = SIGNALS.map((signal) => ({
+    signal,
+    run: periodicRun(turns, signal.period, signal.match),
+  })).find(({ signal, run }) => run >= effectiveMinimum(signal, threshold));
   return hit === undefined ? null : { reason: hit.signal.reason, count: hit.run };
 };

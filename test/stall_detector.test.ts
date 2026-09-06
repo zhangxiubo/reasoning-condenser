@@ -45,7 +45,7 @@ test("a two-call ping-pong reports alternating_calls and counts every turn", () 
   const alternating = (n: number): HistoryTurn[] =>
     repeat(n, (index) => (index % 2 === 0 ? turn("bash", "A", "ra") : turn("bash", "B", "rb")));
 
-  assert.equal(detectStall(alternating(3), 3)?.reason, undefined);
+  assert.equal(detectStall(alternating(3), 3), null);
   assert.equal(detectStall(alternating(4), 3)?.count, 4);
   assert.equal(detectStall(alternating(5), 3)?.count, 5);
   assert.equal(detectStall(alternating(6), 3)?.count, 6);
@@ -55,6 +55,27 @@ test("a two-call ping-pong reports alternating_calls and counts every turn", () 
 test("below the threshold nothing is reported", () => {
   assert.equal(detectStall(repeat(2, () => turn("bash", "tail", "same")), 3), null);
   assert.equal(detectStall([], 3), null);
+});
+
+test("plain repetition is not misread as alternation", () => {
+  const verdict = detectStall(repeat(6, () => turn("bash", "tail", "same")), 10);
+
+  assert.notEqual(verdict?.reason, "alternating_calls");
+});
+
+test("a single turn is never a stall, even at the lowest threshold", () => {
+  assert.equal(detectStall(repeat(1, () => turn("bash", "tail", "same")), 1), null);
+});
+
+test("the reported count belongs to the signal that actually fired", () => {
+  const results = ["r1", "r1", "r2", "r2", "r2"];
+  const verdict = detectStall(
+    repeat(5, (index) => turn("bash", "tail", results[index]!)),
+    3,
+  );
+
+  assert.equal(verdict?.reason, "unchanged_result");
+  assert.equal(verdict?.count, 3);
 });
 
 test("the turn limit covers the longest run any signal consults", () => {
