@@ -37,8 +37,8 @@ export interface NormalizedHistory {
  *   metadata  session or client bookkeeping; skipped without ending the run
  */
 type Classified =
-  | { kind: "calls"; names: string[]; parts: Array<[string, string]> }
-  | { kind: "results"; contents: unknown[] }
+  | { kind: "calls"; ids: string[]; names: string[]; parts: Array<[string, string]> }
+  | { kind: "results"; entries: Array<[string, unknown]> }
   | { kind: "boundary" }
   | { kind: "metadata" };
 
@@ -59,6 +59,7 @@ const classifyAnthropic = (message: AnthropicMessage): Classified => {
       ? BOUNDARY
       : {
           kind: "calls",
+          ids: uses.map((use) => use.id),
           names: uses.map((use) => String(use.name)),
           parts: uses.map((use) => [String(use.name), JSON.stringify(use.input ?? {})]),
         };
@@ -68,7 +69,7 @@ const classifyAnthropic = (message: AnthropicMessage): Classified => {
   );
   return results.length === 0
     ? BOUNDARY
-    : { kind: "results", contents: results.map((result) => result.content) };
+    : { kind: "results", entries: results.map((result) => [result.tool_use_id, result.content]) };
 };
 
 const classifyOpenAi = (message: OpenAiChatMessage): Classified => {
@@ -76,7 +77,7 @@ const classifyOpenAi = (message: OpenAiChatMessage): Classified => {
     return METADATA;
   }
   if (message.role === "tool") {
-    return { kind: "results", contents: [message.content] };
+    return { kind: "results", entries: [[message.tool_call_id ?? "", message.content]] };
   }
   if (message.role !== "assistant") {
     return BOUNDARY;
@@ -86,9 +87,32 @@ const classifyOpenAi = (message: OpenAiChatMessage): Classified => {
     ? BOUNDARY
     : {
         kind: "calls",
+        ids: calls.map((call) => call?.id ?? ""),
         names: calls.map((call) => call?.function?.name ?? ""),
         parts: calls.map((call) => [call?.function?.name ?? "", call?.function?.arguments ?? ""]),
       };
+};
+
+/**
+ * A client may return parallel tool results in a different order than the
+ * calls were made, so the raw arrival order cannot be used for `result_sig`
+ * (two otherwise-identical turns would then compare unequal). Results are
+ * matched to their call by id and re-emitted in call order; a result whose id
+ * does not match any call in this turn is kept, appended after the matched
+ * ones, in the order it arrived.
+ */
+const orderResults = (ids: string[], entries: Array<[string, unknown]>): unknown[] => {
+  const byId = new Map<string, unknown>();
+  const unmatched: unknown[] = [];
+  for (const [id, content] of entries) {
+    if (id !== "" && ids.includes(id)) {
+      byId.set(id, content);
+    } else {
+      unmatched.push(content);
+    }
+  }
+  const matched = ids.filter((id) => byId.has(id)).map((id) => byId.get(id));
+  return [...matched, ...unmatched];
 };
 
 /**
@@ -102,7 +126,7 @@ const trailingTurns = <T>(
   turn_limit: number,
 ): { turns: HistoryTurn[]; awaiting_tool_decision: boolean } => {
   const turns: HistoryTurn[] = [];
-  let pending: unknown[] = [];
+  let pending: Array<[string, unknown]> = [];
   let awaiting_tool_decision = false;
   let seen_conversation_message = false;
 
@@ -119,13 +143,13 @@ const trailingTurns = <T>(
       break;
     }
     if (item.kind === "results") {
-      pending = [...item.contents, ...pending];
+      pending = [...item.entries, ...pending];
       continue;
     }
     turns.unshift({
       tool_sig: JSON.stringify(item.names),
       call_sig: JSON.stringify(item.parts),
-      result_sig: JSON.stringify(pending),
+      result_sig: JSON.stringify(orderResults(item.ids, pending)),
     });
     pending = [];
   }
@@ -179,10 +203,12 @@ export const fromOpenAiRequest = (
   turn_limit: number,
 ): NormalizedHistory => {
   const messages = request.messages ?? [];
-  const system = messages.find((message) => message.role === "system");
+  const leading_prompt = messages.find(
+    (message) => message.role === "system" || message.role === "developer",
+  );
   const first_human = messages.find((message) => message.role === "user");
   return {
-    conversation_id: digest(["openai", system?.content ?? null, first_human?.content ?? null]),
+    conversation_id: digest(["openai", leading_prompt?.content ?? null, first_human?.content ?? null]),
     ...trailingTurns(messages, classifyOpenAi, turn_limit),
   };
 };

@@ -117,3 +117,55 @@ test("array content produces distinct OpenAI conversation ids", () => {
   assert.equal(build("Task X").awaiting_tool_decision, true);
   assert.equal(build("Task X").turns.length, 3);
 });
+
+test("a trailing tool call with no results yet means no decision is pending", () => {
+  const messages: AnthropicMessage[] = [
+    ...anthropicPolls(2),
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t9", name: "Bash", input: { command: "tail -5 log" } }],
+    },
+  ];
+
+  const history = fromAnthropicRequest(anthropic(messages), LIMIT);
+
+  assert.equal(history.awaiting_tool_decision, false);
+});
+
+test("a trailing plain human turn means no decision is pending", () => {
+  const messages: AnthropicMessage[] = [...anthropicPolls(2), { role: "user", content: "any updates?" }];
+
+  const history = fromAnthropicRequest(anthropic(messages), LIMIT);
+
+  assert.equal(history.awaiting_tool_decision, false);
+  assert.equal(history.turns.length, 0);
+});
+
+test("parallel tool results are paired by tool_use_id regardless of arrival order", () => {
+  const parallelTurn = (order: ["p1", "p2"] | ["p2", "p1"]): AnthropicMessage[] => [
+    { role: "user", content: "Fetch both files." },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "p1", name: "Read", input: { path: "a.txt" } },
+        { type: "tool_use", id: "p2", name: "Read", input: { path: "b.txt" } },
+      ],
+    },
+    {
+      role: "user",
+      content: order.map((id) => ({
+        type: "tool_result" as const,
+        tool_use_id: id,
+        content: id === "p1" ? "result A" : "result B",
+      })),
+    },
+  ];
+
+  const forward = fromAnthropicRequest(anthropic(parallelTurn(["p1", "p2"])), LIMIT);
+  const reversed = fromAnthropicRequest(anthropic(parallelTurn(["p2", "p1"])), LIMIT);
+
+  assert.equal(forward.turns.length, 1);
+  assert.match(String(forward.turns[0]?.result_sig), /result A/);
+  assert.match(String(forward.turns[0]?.result_sig), /result B/);
+  assert.equal(forward.turns[0]?.result_sig, reversed.turns[0]?.result_sig);
+});
