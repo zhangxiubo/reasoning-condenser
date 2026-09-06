@@ -315,7 +315,7 @@ Escalation is tracked per conversation. Claude Code sessions are identified by t
 
 Which rung applies is decided by the level relative to `LOOP_BREAKER_MAX_INJECTIONS`, not by a fixed step count, so a low `LOOP_BREAKER_MAX_INJECTIONS` can skip the notice or the warning entirely.
 
-A run of `LOOP_BREAKER_DECAY_AFTER_CLEAN` consecutive clean requests lowers the level by one; a model that stays clean long enough walks back to zero and is forgotten. Escalation is faster than decay, so a single unrelated call between stalls still climbs rather than reversing it.
+A run of `LOOP_BREAKER_DECAY_AFTER_CLEAN` consecutive clean requests lowers the level by one; a model that stays clean long enough walks back to zero and is forgotten. At the default of `2` or higher, escalation is faster than decay: a single unrelated call between stalls still climbs rather than reversing it. At `1`, one clean request immediately reverses one level, so a model that alternates stalling with a single clean call never advances past level 1, and reaches the hard stop only if `LOOP_BREAKER_MAX_INJECTIONS` is also `1`.
 
 It only fires while the model is about to choose its next action — the trailing history ends on tool results — and the input request is never mutated. Disabled by default.
 
