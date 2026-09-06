@@ -22,6 +22,13 @@ test("the level is capped at max_injections even when the cap is one", () => {
   assert.equal(ledger.recordStall("a", policy), 1);
 });
 
+test("the returned level is floored at one even when max_injections is misconfigured to zero", () => {
+  const ledger = new LoopEscalation();
+  const policy = { max_injections: 0, decay_after_clean: 2 };
+
+  assert.equal(ledger.recordStall("a", policy), 1);
+});
+
 test("conversations do not share a level", () => {
   const ledger = new LoopEscalation();
 
