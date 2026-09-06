@@ -109,6 +109,11 @@ const assistantMessage = (message: AnthropicMessage): OpenAiChatMessage => {
   };
 };
 
+// Claude Code places `system` messages inside `messages` (session metadata and
+// a per-request token notice). They are delivered upstream as user messages:
+// Qwen3.8 rejects a system message that is not first, and GPT-OSS drops one
+// silently. Merging them into the leading prompt would rewrite the cacheable
+// prefix on every request. See docs/loop_breaker_design.md.
 const messageConversion = (message: AnthropicMessage): OpenAiChatMessage[] =>
   message.role === "assistant" ? [assistantMessage(message)] : userMessage(message);
 

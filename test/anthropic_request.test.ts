@@ -120,3 +120,26 @@ test("omits preservation for endpoints that reject chat-template options", () =>
 
   assert.equal(converted.chat_template_kwargs, undefined);
 });
+
+test("converts system messages in the array to user messages", () => {
+  const request = toOpenAiRequest(
+    {
+      model: "alias",
+      max_tokens: 100,
+      system: "Base prompt.",
+      messages: [
+        { role: "user", content: "Do the thing." },
+        { role: "system", content: "<total_tokens>1234 tokens left</total_tokens>" },
+      ],
+    },
+    "upstream-model",
+    true,
+  );
+
+  assert.deepEqual(
+    request.messages.map((message) => message.role),
+    ["system", "user", "user"],
+  );
+  assert.equal(request.messages[0]?.content, "Base prompt.");
+  assert.equal(request.messages[2]?.content, "<total_tokens>1234 tokens left</total_tokens>");
+});
