@@ -45,7 +45,7 @@ const numberValue = (value: string | undefined, fallback: number, name: string):
 
 const booleanValue = (value: string | undefined, fallback: boolean): boolean => {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined) {
+  if (normalized === undefined || normalized === "") {
     return fallback;
   }
   const values: Record<string, boolean> = {
@@ -65,33 +65,15 @@ const booleanValue = (value: string | undefined, fallback: boolean): boolean => 
   return parsed;
 };
 
-// Non-throwing parsers for loop-breaker settings: bad or missing values fall
-// back to the provided default instead of failing startup.
-const optionalBooleanValue = (value: string | undefined, fallback: boolean): boolean => {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined || normalized === "") {
-    return fallback;
-  }
-  const values: Record<string, boolean> = {
-    "1": true,
-    true: true,
-    yes: true,
-    on: true,
-    "0": false,
-    false: false,
-    no: false,
-    off: false,
-  };
-  const parsed = values[normalized];
-  return parsed === undefined ? fallback : parsed;
-};
-
-const optionalPositiveIntValue = (value: string | undefined, fallback: number): number => {
+const positiveIntValue = (value: string | undefined, fallback: number, name: string): number => {
   if (value === undefined || value.trim() === "") {
     return fallback;
   }
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
 };
 
 const ratioValue = (value: string | undefined, fallback: number, name: string): number => {
@@ -162,9 +144,18 @@ export const loadConfig = (environment: NodeJS.ProcessEnv = process.env): AppCon
     ),
     reasoning_replay_mode: reasoningReplayMode(environment.UPSTREAM_REASONING_REPLAY_MODE),
     loop_breaker: {
-      enabled: optionalBooleanValue(environment.LOOP_BREAKER_ENABLED, false),
-      threshold: optionalPositiveIntValue(environment.LOOP_BREAKER_THRESHOLD, 3),
-      max_injections: optionalPositiveIntValue(environment.LOOP_BREAKER_MAX_INJECTIONS, 3),
+      enabled: booleanValue(environment.LOOP_BREAKER_ENABLED, false),
+      threshold: positiveIntValue(environment.LOOP_BREAKER_THRESHOLD, 3, "LOOP_BREAKER_THRESHOLD"),
+      max_injections: positiveIntValue(
+        environment.LOOP_BREAKER_MAX_INJECTIONS,
+        3,
+        "LOOP_BREAKER_MAX_INJECTIONS",
+      ),
+      decay_after_clean: positiveIntValue(
+        environment.LOOP_BREAKER_DECAY_AFTER_CLEAN,
+        2,
+        "LOOP_BREAKER_DECAY_AFTER_CLEAN",
+      ),
     },
     min_reasoning_tokens: numberValue(
       environment.CONDENSE_MIN_REASONING_TOKENS,

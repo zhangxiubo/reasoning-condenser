@@ -6,6 +6,8 @@ export interface LoopBreakerConfig {
   threshold: number;
   /** Maximum notice injections per conversation before the hard stop (tools stripped). */
   max_injections: number;
+  /** Consecutive clean requests that reduce the escalation level by one. */
+  decay_after_clean: number;
 }
 
 export type LoopBreakerReason = "repeated_call" | "unchanged_result" | "alternating_calls";

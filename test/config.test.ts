@@ -48,3 +48,34 @@ test("rejects ambiguous booleans and ratios above one", () => {
   assert.throws(() => loadConfig({ CONDENSE_TOOL_RATIO: "1.1" }), /must not exceed 1/);
   assert.throws(() => loadConfig({ UPSTREAM_REASONING_REPLAY_MODE: "automatic" }), /must be/);
 });
+
+test("loads loop breaker settings with defaults", () => {
+  const config = loadConfig({});
+
+  assert.equal(config.loop_breaker.enabled, false);
+  assert.equal(config.loop_breaker.threshold, 3);
+  assert.equal(config.loop_breaker.max_injections, 3);
+  assert.equal(config.loop_breaker.decay_after_clean, 2);
+});
+
+test("loads explicit loop breaker settings", () => {
+  const config = loadConfig({
+    LOOP_BREAKER_ENABLED: "true",
+    LOOP_BREAKER_THRESHOLD: "5",
+    LOOP_BREAKER_MAX_INJECTIONS: "2",
+    LOOP_BREAKER_DECAY_AFTER_CLEAN: "4",
+  });
+
+  assert.equal(config.loop_breaker.enabled, true);
+  assert.equal(config.loop_breaker.threshold, 5);
+  assert.equal(config.loop_breaker.max_injections, 2);
+  assert.equal(config.loop_breaker.decay_after_clean, 4);
+});
+
+test("rejects invalid loop breaker settings instead of ignoring them", () => {
+  assert.throws(() => loadConfig({ LOOP_BREAKER_ENABLED: "ture" }), /Expected a boolean value/);
+  assert.throws(() => loadConfig({ LOOP_BREAKER_THRESHOLD: "0" }), /LOOP_BREAKER_THRESHOLD/);
+  assert.throws(() => loadConfig({ LOOP_BREAKER_THRESHOLD: "-1" }), /LOOP_BREAKER_THRESHOLD/);
+  assert.throws(() => loadConfig({ LOOP_BREAKER_THRESHOLD: "2.5" }), /LOOP_BREAKER_THRESHOLD/);
+  assert.throws(() => loadConfig({ LOOP_BREAKER_MAX_INJECTIONS: "nope" }), /LOOP_BREAKER_MAX_INJECTIONS/);
+});

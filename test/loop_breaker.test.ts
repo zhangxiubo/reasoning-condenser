@@ -4,7 +4,7 @@ import { applyLoopBreaker, LoopBreakerState } from "../src/loop_breaker.ts";
 import type { OpenAiChatMessage, OpenAiChatRequest, OpenAiToolCall } from "../src/types.ts";
 
 const STATIC_LOG = "step 3/50 done\nstep 4/50 done\nstep 5/50 done\n";
-const CFG = { enabled: true, threshold: 3, max_injections: 3 };
+const CFG = { enabled: true, threshold: 3, max_injections: 3, decay_after_clean: 2 };
 const TOOLS = [{ type: "function" as const, function: { name: "bash", parameters: {} } }];
 
 const toolCall = (id: string, name: string, args: string): OpenAiToolCall[] => [
@@ -80,7 +80,12 @@ test("4. only 2 identical calls (below threshold) -> no injection", () => {
 });
 
 test("5. enabled=false on a stalled history -> no injection", () => {
-  const result = applyLoopBreaker(request(identicalPolls(3)), { enabled: false, threshold: 3, max_injections: 3 });
+  const result = applyLoopBreaker(request(identicalPolls(3)), {
+    enabled: false,
+    threshold: 3,
+    max_injections: 3,
+    decay_after_clean: 2,
+  });
   assert.equal(result.injected, false);
   assert.equal(result.request.messages.length, 6);
 });
