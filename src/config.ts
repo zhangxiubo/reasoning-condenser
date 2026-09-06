@@ -1,5 +1,6 @@
 import type { CondensationProfile } from "./types.ts";
 import type { ReasoningReplayMode } from "./reasoning_replay.ts";
+import type { LoopBreakerConfig } from "./loop_breaker.ts";
 
 export interface EndpointConfig {
   base_url: string;
@@ -20,6 +21,7 @@ export interface AppConfig {
   condenser_reasoning_effort: string;
   condenser_max_output_tokens: number;
   reasoning_replay_mode: ReasoningReplayMode;
+  loop_breaker: LoopBreakerConfig;
   min_reasoning_tokens: number;
   profiles: Record<"completed_response" | "tool_continuation", CondensationProfile>;
   archive_path?: string;
@@ -61,6 +63,35 @@ const booleanValue = (value: string | undefined, fallback: boolean): boolean => 
     throw new Error(`Expected a boolean value, received ${value}`);
   }
   return parsed;
+};
+
+// Non-throwing parsers for loop-breaker settings: bad or missing values fall
+// back to the provided default instead of failing startup.
+const optionalBooleanValue = (value: string | undefined, fallback: boolean): boolean => {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined || normalized === "") {
+    return fallback;
+  }
+  const values: Record<string, boolean> = {
+    "1": true,
+    true: true,
+    yes: true,
+    on: true,
+    "0": false,
+    false: false,
+    no: false,
+    off: false,
+  };
+  const parsed = values[normalized];
+  return parsed === undefined ? fallback : parsed;
+};
+
+const optionalPositiveIntValue = (value: string | undefined, fallback: number): number => {
+  if (value === undefined || value.trim() === "") {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
 const ratioValue = (value: string | undefined, fallback: number, name: string): number => {
@@ -130,6 +161,11 @@ export const loadConfig = (environment: NodeJS.ProcessEnv = process.env): AppCon
       "CONDENSER_MAX_OUTPUT_TOKENS",
     ),
     reasoning_replay_mode: reasoningReplayMode(environment.UPSTREAM_REASONING_REPLAY_MODE),
+    loop_breaker: {
+      enabled: optionalBooleanValue(environment.LOOP_BREAKER_ENABLED, false),
+      threshold: optionalPositiveIntValue(environment.LOOP_BREAKER_THRESHOLD, 3),
+      max_injections: optionalPositiveIntValue(environment.LOOP_BREAKER_MAX_INJECTIONS, 3),
+    },
     min_reasoning_tokens: numberValue(
       environment.CONDENSE_MIN_REASONING_TOKENS,
       512,

@@ -21,6 +21,7 @@ export const testConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   condenser_reasoning_effort: "low",
   condenser_max_output_tokens: 4_096,
   reasoning_replay_mode: "reasoning_content",
+  loop_breaker: { enabled: false, threshold: 3, max_injections: 3 },
   min_reasoning_tokens: 10,
   profiles: {
     completed_response: { name: "completed_response", max_tokens: 100, target_ratio: 0.25 },

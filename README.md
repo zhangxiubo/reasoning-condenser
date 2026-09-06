@@ -262,6 +262,9 @@ For another provider, select the Pi compatibility options that match that endpoi
 | `CONDENSER_REASONING_EFFORT` | `low` | Reasoning effort sent to the condenser |
 | `CONDENSER_MAX_OUTPUT_TOKENS` | `4096` | Total condenser allowance shared by its own reasoning and final JSON |
 | `UPSTREAM_REASONING_REPLAY_MODE` | `reasoning_content` | Historical replay form: `reasoning_content` or `assistant_content` |
+| `LOOP_BREAKER_ENABLED` | `false` | Enables the doom-loop breaker |
+| `LOOP_BREAKER_THRESHOLD` | `3` | Consecutive no-progress tool turns before a notice is injected |
+| `LOOP_BREAKER_MAX_INJECTIONS` | `3` | Notices per conversation before the hard stop strips tools |
 | `CONDENSE_MIN_REASONING_TOKENS` | `512` | Estimated size below which reasoning passes through |
 | `CONDENSE_COMPLETED_MAX_TOKENS` | `768` | Maximum summary budget after a completed answer |
 | `CONDENSE_COMPLETED_RATIO` | `0.15` | Target completed-answer compression ratio |
@@ -296,6 +299,18 @@ x-rcr-visible-output-tokens
 ```
 
 The Anthropic-compatible `/v1/messages/count_tokens` endpoint returns an estimate and marks it with `x-rcr-token-count-estimated: true`. The OpenAI-compatible `/v1/models` endpoint advertises the configured primary model.
+
+## Doom-loop breaker
+
+The loop breaker detects a model stuck making the same tool calls with no progress (identical calls, unchanged results, or a two-call ping-pong) and breaks the loop by injecting an operator notice that asks it to stop and report. It is model-agnostic: it inspects only the request's tool-call history, never the model name or endpoint.
+
+Escalation is tracked per conversation (keyed by the system prompt and first user message). Each stalled request appends one message:
+
+1. **Notice** — ask the model to stop calling tools and report its status.
+2. **Warning** — a stronger message if it keeps going.
+3. **Hard stop** — after `LOOP_BREAKER_MAX_INJECTIONS`, strip `tools` from the request so the model cannot call tools and must answer in text.
+
+It only fires while the model is about to choose its next action (the history ends on a tool result), and the input request is never mutated. Disabled by default.
 
 ## Failure behavior
 
