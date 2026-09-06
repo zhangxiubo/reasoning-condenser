@@ -264,7 +264,8 @@ For another provider, select the Pi compatibility options that match that endpoi
 | `UPSTREAM_REASONING_REPLAY_MODE` | `reasoning_content` | Historical replay form: `reasoning_content` or `assistant_content` |
 | `LOOP_BREAKER_ENABLED` | `false` | Enables the doom-loop breaker |
 | `LOOP_BREAKER_THRESHOLD` | `3` | Consecutive no-progress tool turns before a notice is injected |
-| `LOOP_BREAKER_MAX_INJECTIONS` | `3` | Notices per conversation before the hard stop strips tools |
+| `LOOP_BREAKER_MAX_INJECTIONS` | `3` | Notices per conversation before tool affordances are removed |
+| `LOOP_BREAKER_DECAY_AFTER_CLEAN` | `2` | Consecutive clean requests that reduce the escalation level by one |
 | `CONDENSE_MIN_REASONING_TOKENS` | `512` | Estimated size below which reasoning passes through |
 | `CONDENSE_COMPLETED_MAX_TOKENS` | `768` | Maximum summary budget after a completed answer |
 | `CONDENSE_COMPLETED_RATIO` | `0.15` | Target completed-answer compression ratio |
@@ -302,15 +303,21 @@ The Anthropic-compatible `/v1/messages/count_tokens` endpoint returns an estimat
 
 ## Doom-loop breaker
 
-The loop breaker detects a model stuck making the same tool calls with no progress (identical calls, unchanged results, or a two-call ping-pong) and breaks the loop by injecting an operator notice that asks it to stop and report. It is model-agnostic: it inspects only the request's tool-call history, never the model name or endpoint.
+The loop breaker detects a model stuck making the same tool calls with no progress and breaks the loop by injecting an operator notice that asks it to stop and report. It is model-agnostic: it inspects only the request's tool-call history, never the model name or endpoint.
 
-Escalation is tracked per conversation (keyed by the system prompt and first user message). Each stalled request appends one message:
+Detection reads a protocol-neutral view of the **client** request, so it sees the same conversation shape whether the client speaks Anthropic Messages or OpenAI Chat Completions. Four signals fire, most specific first: an identical call with unchanged results, a repeated identical call, the same tool meeting the same result with differing arguments, and a two-call ping-pong of identical calls and results.
+
+Escalation is tracked per conversation. Claude Code sessions are identified by the session id the client sends; other clients fall back to a hash of the leading system prompt and first human turn. Each stalled request appends one message:
 
 1. **Notice** — ask the model to stop calling tools and report its status.
-2. **Warning** — a stronger message if it keeps going.
-3. **Hard stop** — after `LOOP_BREAKER_MAX_INJECTIONS`, strip `tools` from the request so the model cannot call tools and must answer in text.
+2. **Warning** — a stronger message once the escalation level reaches 2.
+3. **Hard stop** — at `LOOP_BREAKER_MAX_INJECTIONS`, remove `tools`, `tool_choice` and `parallel_tool_calls` so the model cannot call tools and must answer in text.
 
-It only fires while the model is about to choose its next action (the history ends on a tool result), and the input request is never mutated. Disabled by default.
+Which rung applies is decided by the level relative to `LOOP_BREAKER_MAX_INJECTIONS`, not by a fixed step count, so a low `LOOP_BREAKER_MAX_INJECTIONS` can skip the notice or the warning entirely.
+
+A run of `LOOP_BREAKER_DECAY_AFTER_CLEAN` consecutive clean requests lowers the level by one; a model that stays clean long enough walks back to zero and is forgotten. Escalation is faster than decay, so a single unrelated call between stalls still climbs rather than reversing it.
+
+It only fires while the model is about to choose its next action — the trailing history ends on tool results — and the input request is never mutated. Disabled by default.
 
 ## Failure behavior
 
