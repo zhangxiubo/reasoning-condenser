@@ -6,8 +6,11 @@ import { prepareOpenAiRequest } from "./openai_request.ts";
 import { toOpenAiResponse } from "./openai_response.ts";
 import { applyReasoningReplay } from "./reasoning_replay.ts";
 import { LoopBreakerState } from "./loop_breaker.ts";
+import { fromAnthropicRequest, fromOpenAiRequest } from "./normalized_history.ts";
+import { historyTurnLimit } from "./stall_detector.ts";
 import type { TurnArchive } from "./archive.ts";
 import type { Logger } from "./logger.ts";
+import type { NormalizedHistory } from "./normalized_history.ts";
 import type { ReasoningCondenser } from "./condensation.ts";
 import type { TokenEstimator } from "./token_estimator.ts";
 import type {
@@ -53,6 +56,7 @@ export class ReasoningRouter {
     archive: TurnArchive,
     token_estimator: TokenEstimator,
     logger: Logger,
+    loop_breaker: LoopBreakerState = new LoopBreakerState(),
   ) {
     this.config = config;
     this.primary_client = primary_client;
@@ -60,12 +64,14 @@ export class ReasoningRouter {
     this.archive = archive;
     this.token_estimator = token_estimator;
     this.logger = logger;
-    this.loop_breaker = new LoopBreakerState();
+    this.loop_breaker = loop_breaker;
   }
 
   async route(request: AnthropicMessagesRequest, signal?: AbortSignal): Promise<ReasoningRouterResult> {
+    const turn_limit = historyTurnLimit(this.config.loop_breaker.threshold);
     const primary_request = this.applyLoopBreaker(
       toOpenAiRequest(request, this.config.primary.model, this.config.primary_preserve_thinking),
+      fromAnthropicRequest(request, turn_limit),
       request.model,
     );
     const { original_turn, condensation } = await this.processTurn(primary_request, request.model, signal);
@@ -91,8 +97,10 @@ export class ReasoningRouter {
     request: OpenAiClientChatRequest,
     signal?: AbortSignal,
   ): Promise<OpenAiReasoningRouterResult> {
+    const turn_limit = historyTurnLimit(this.config.loop_breaker.threshold);
     const primary_request = this.applyLoopBreaker(
       prepareOpenAiRequest(request, this.config.primary.model, this.config.primary_preserve_thinking),
+      fromOpenAiRequest(request, turn_limit),
       request.model,
     );
     const { original_turn, condensation } = await this.processTurn(primary_request, request.model, signal);
@@ -126,15 +134,19 @@ export class ReasoningRouter {
     );
   }
 
-  private applyLoopBreaker(primary_request: OpenAiChatRequest, public_model: string): OpenAiChatRequest {
-    const result = this.loop_breaker.apply(primary_request, this.config.loop_breaker);
+  private applyLoopBreaker(
+    primary_request: OpenAiChatRequest,
+    history: NormalizedHistory,
+    public_model: string,
+  ): OpenAiChatRequest {
+    const result = this.loop_breaker.apply(primary_request, history, this.config.loop_breaker);
     if (result.injected) {
       this.logger.info("loop_breaker_injected", {
         model: public_model,
-        stall_count: result.stallCount,
+        stall_count: result.stall_count,
         reason: result.reason,
         level: result.level,
-        hard_stop: result.hardStop,
+        hard_stop: result.hard_stop,
       });
     }
     return result.request;
