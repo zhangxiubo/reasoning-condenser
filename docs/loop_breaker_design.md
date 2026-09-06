@@ -117,7 +117,7 @@ clean request observed  clean run + 1
 
 Injections never fall below zero. Resetting the clean run after each decay step is what makes decay cost a fresh run of clean requests every time, rather than one run followed by a decay on every subsequent request.
 
-Escalation is faster than decay by design, for `decay_after_clean` of `2` or more: a single clean request never cancels a stall, so a model that emits one unrelated call between stalls still climbs. A model that recovers walks its level back to zero. At `decay_after_clean = 1`, escalation and decay run at the same rate: a model alternating one stall with one clean request never advances past level 1, and reaches the hard stop only when `max_injections` is also `1`.
+Escalation is faster than decay by design, for `decay_after_clean` of `2` or more: a single clean request never cancels a stall, so a model that emits one unrelated call between stalls still climbs. A model that recovers walks its level back to zero. At `decay_after_clean = 1`, escalation and decay run at the same rate: each clean request cancels exactly the increment from the stall before it, so a model alternating one stall with one clean request makes no net progress toward the hard stop, wherever the level already stands.
 
 Entries carry a last-seen time. Expiry is checked on access, not only when the map overflows, so a quiet conversation's entry does not survive indefinitely. The size cap remains as a second limit.
 
