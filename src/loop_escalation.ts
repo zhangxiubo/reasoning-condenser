@@ -40,19 +40,24 @@ export class LoopEscalation {
   recordStall(conversation_id: string, policy: EscalationPolicy): number {
     const now = this.clock();
     const current = this.live(conversation_id, now);
+    const cap = Math.max(policy.max_injections, 1);
     const next: Entry = {
-      injections: current.injections + 1,
+      injections: Math.min(current.injections + 1, cap),
       clean_run: 0,
       last_seen_at: now,
     };
     this.entries.set(conversation_id, next);
     this.evict(now);
-    return Math.min(next.injections, Math.max(policy.max_injections, 1));
+    return next.injections;
   }
 
   recordClean(conversation_id: string, policy: EscalationPolicy): void {
     const now = this.clock();
     const current = this.live(conversation_id, now);
+    // Only reachable when decay_after_clean is 1: for 2 or more, the branch
+    // below already deletes at zero. Without this guard here, a clean request
+    // on an already-forgotten conversation would decay a fresh zero entry into
+    // a stored count of -1, and the next recordStall would report level 0.
     if (current.injections === 0) {
       this.entries.delete(conversation_id);
       return;
