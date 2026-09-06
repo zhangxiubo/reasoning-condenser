@@ -307,7 +307,7 @@ The loop breaker detects a model stuck making the same tool calls with no progre
 
 Detection reads a protocol-neutral view of the **client** request, so it sees the same conversation shape whether the client speaks Anthropic Messages or OpenAI Chat Completions. Four signals fire, most specific first: an identical call with unchanged results, a repeated identical call, the same tool meeting the same result with differing arguments, and a two-call ping-pong of identical calls and results.
 
-Escalation is tracked per conversation. Claude Code sessions are identified by the session id the client sends; other clients fall back to a hash of the leading system prompt and first human turn. Each stalled request appends one message:
+Escalation is tracked per conversation. Claude Code sessions are keyed by a hash of the session id the client sends; other clients fall back to a hash of the leading system prompt and first human turn. In both cases only the hash is kept — the session id and the prompt themselves are never stored or logged. Each stalled request appends one message:
 
 1. **Notice** — ask the model to stop calling tools and report its status.
 2. **Warning** — a stronger message once the escalation level reaches 2.

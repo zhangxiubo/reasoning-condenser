@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fromAnthropicRequest, fromOpenAiRequest } from "../src/normalized_history.ts";
-import type { AnthropicMessage, OpenAiChatMessage } from "../src/types.ts";
+import type {
+  AnthropicMessage,
+  AnthropicMessagesRequest,
+  OpenAiChatMessage,
+  OpenAiClientChatRequest,
+} from "../src/types.ts";
 
 const LIMIT = 6;
 
@@ -20,8 +25,58 @@ const anthropicPolls = (n: number): AnthropicMessage[] => {
   return messages;
 };
 
-const anthropic = (messages: AnthropicMessage[], extra: Record<string, unknown> = {}) =>
-  ({ model: "alias", max_tokens: 100, system: "sys", messages, ...extra }) as never;
+/**
+ * The shape Claude Code actually sends: the assistant narrates alongside its
+ * tool call, and the user message carrying the tool result also carries a
+ * system reminder as a `text` block. Both messages therefore mix `text` with
+ * the block the classification depends on.
+ */
+const claudeCodePolls = (n: number): AnthropicMessage[] => {
+  const messages: AnthropicMessage[] = [{ role: "user", content: "Monitor the job." }];
+  for (let index = 1; index <= n; index += 1) {
+    messages.push({
+      role: "assistant",
+      content: [
+        { type: "text", text: "Checking the log again." },
+        { type: "tool_use", id: `t${index}`, name: "Bash", input: { command: "tail -5 log" } },
+      ],
+    });
+    messages.push({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: `t${index}`, content: "step 5/50 done" },
+        { type: "text", text: "<system-reminder>Your todo list is empty.</system-reminder>" },
+      ],
+    });
+  }
+  return messages;
+};
+
+const openAiPolls = (n: number): OpenAiChatMessage[] => {
+  const messages: OpenAiChatMessage[] = [];
+  for (let index = 1; index <= n; index += 1) {
+    messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        { id: `c${index}`, type: "function", function: { name: "bash", arguments: `{"c":"x"}` } },
+      ],
+    });
+    messages.push({ role: "tool", tool_call_id: `c${index}`, content: "same" });
+  }
+  return messages;
+};
+
+const anthropic = (
+  messages: AnthropicMessage[],
+  extra: Partial<AnthropicMessagesRequest> = {},
+): AnthropicMessagesRequest => ({
+  model: "alias",
+  max_tokens: 100,
+  system: "sys",
+  messages,
+  ...extra,
+});
 
 test("a trailing system message does not hide that a tool decision is pending", () => {
   const withNotice = anthropic([
@@ -30,6 +85,17 @@ test("a trailing system message does not hide that a tool decision is pending", 
   ]);
 
   const history = fromAnthropicRequest(withNotice, LIMIT);
+
+  assert.equal(history.awaiting_tool_decision, true);
+  assert.equal(history.turns.length, 3);
+});
+
+// This is the shape real traffic has, and the whole breaker depends on reading
+// it correctly. If a `text` block sitting beside the `tool_result` blocks were
+// treated as a human turn, every Claude Code request would look like a fresh
+// conversation and the breaker would never fire at all.
+test("system-reminder text beside a tool result neither ends nor hides the trailing run", () => {
+  const history = fromAnthropicRequest(anthropic(claudeCodePolls(3)), LIMIT);
 
   assert.equal(history.awaiting_tool_decision, true);
   assert.equal(history.turns.length, 3);
@@ -89,25 +155,14 @@ test("the Anthropic conversation id comes from the Claude Code session id", () =
 });
 
 test("array content produces distinct OpenAI conversation ids", () => {
-  const openAiPolls: OpenAiChatMessage[] = [];
-  for (let index = 1; index <= 3; index += 1) {
-    openAiPolls.push({
-      role: "assistant",
-      content: null,
-      tool_calls: [
-        { id: `c${index}`, type: "function", function: { name: "bash", arguments: `{"c":"x"}` } },
-      ],
-    });
-    openAiPolls.push({ role: "tool", tool_call_id: `c${index}`, content: "same" });
-  }
   const build = (text: string) =>
     fromOpenAiRequest(
       {
         model: "m",
         messages: [
           { role: "system", content: "sys" },
-          { role: "user", content: [{ type: "text", text }] as never },
-          ...openAiPolls,
+          { role: "user", content: [{ type: "text", text }] },
+          ...openAiPolls(3),
         ],
       },
       LIMIT,
@@ -116,6 +171,27 @@ test("array content produces distinct OpenAI conversation ids", () => {
   assert.notEqual(build("Task X").conversation_id, build("Task Y").conversation_id);
   assert.equal(build("Task X").awaiting_tool_decision, true);
   assert.equal(build("Task X").turns.length, 3);
+});
+
+// `developer` is the newer OpenAI spelling of `system`, and both builders have
+// to agree that it is client bookkeeping: it must not end the trailing run, and
+// it must still be the leading prompt that identifies the conversation.
+test("an OpenAI developer message counts as metadata on both paths", () => {
+  const build = (leading_prompt: string): OpenAiClientChatRequest => ({
+    model: "m",
+    messages: [
+      { role: "developer", content: leading_prompt },
+      { role: "user", content: "Monitor the job." },
+      ...openAiPolls(3),
+      { role: "developer", content: "<total_tokens>1 tokens left</total_tokens>" },
+    ],
+  });
+
+  const history = fromOpenAiRequest(build("dev prompt"), LIMIT);
+
+  assert.equal(history.awaiting_tool_decision, true);
+  assert.equal(history.turns.length, 3);
+  assert.notEqual(history.conversation_id, fromOpenAiRequest(build("other prompt"), LIMIT).conversation_id);
 });
 
 test("a trailing tool call with no results yet means no decision is pending", () => {

@@ -59,6 +59,23 @@ test("one clean request between stalls does not cancel a stall", () => {
   assert.equal(ledger.recordStall("a", POLICY), 3);
 });
 
+// A decay step restarts the clean run, so each further step costs another full
+// run of clean requests. Were the run left to keep growing, the first decay
+// would be followed by another on every single clean request after it, and the
+// level here would come back as 2 instead of 3.
+test("each decay step costs a fresh run of clean requests", () => {
+  const ledger = new LoopEscalation();
+
+  ledger.recordStall("a", POLICY);
+  ledger.recordStall("a", POLICY);
+  ledger.recordStall("a", POLICY);
+  ledger.recordClean("a", POLICY);
+  ledger.recordClean("a", POLICY);
+  ledger.recordClean("a", POLICY);
+
+  assert.equal(ledger.recordStall("a", POLICY), 3);
+});
+
 test("decay stops at zero and forgets the conversation", () => {
   const ledger = new LoopEscalation();
 

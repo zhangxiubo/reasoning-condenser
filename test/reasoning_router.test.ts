@@ -38,16 +38,28 @@ const routerWith = (loop_breaker_overrides: Record<string, unknown>, primary: Fa
   );
 };
 
+// Modelled on what Claude Code actually sends, so these tests exercise the
+// breaker end to end on the real message shape: the assistant narrates
+// alongside its tool call, the tool result arrives in a `user` message that
+// also carries a system reminder as a `text` block, and a trailing `system`
+// message closes the request. Every one of those would look like a human turn
+// to a careless classification, and any of them would stop the breaker firing.
 const stalledAnthropicMessages = (): AnthropicMessage[] => {
   const messages: AnthropicMessage[] = [{ role: "user", content: "Monitor the job." }];
   for (let index = 1; index <= 3; index += 1) {
     messages.push({
       role: "assistant",
-      content: [{ type: "tool_use", id: `t${index}`, name: "Bash", input: { command: "tail -5 log" } }],
+      content: [
+        { type: "text", text: "Checking the log again." },
+        { type: "tool_use", id: `t${index}`, name: "Bash", input: { command: "tail -5 log" } },
+      ],
     });
     messages.push({
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: `t${index}`, content: "step 5/50 done" }],
+      content: [
+        { type: "tool_result", tool_use_id: `t${index}`, content: "step 5/50 done" },
+        { type: "text", text: "<system-reminder>Your todo list is empty.</system-reminder>" },
+      ],
     });
   }
   // Claude Code appends this to every request once a session has usage.

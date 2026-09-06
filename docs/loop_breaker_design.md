@@ -167,7 +167,7 @@ The previous key called `.toString()` on message content typed `string | JsonVal
 
 The fallback uses canonical serialization rather than string coercion. The Anthropic path prefers `session_id` because it is what the client already means by "this conversation": it is stable across compaction and across edits to the system prompt, and it avoids hashing a system prompt that runs to tens of kilobytes on every request. The captured Claude Code session prompt was 15,612 characters.
 
-`metadata.user_id` also carries `device_id` and `account_uuid`. Only `session_id` is read, it is hashed before storage, and no part of the field is logged.
+`metadata.user_id` carries more than the session id, and what else it carries is not fixed. Claude Code 2.1.263 was observed sending `device_id`, `account_uuid`, `parent_session_id`, `ti` and `tk`, and `CLAUDE_CODE_EXTRA_METADATA` lets a user put arbitrary further keys of their own into the same field. The field's contents are therefore unknown in advance and must be treated as sensitive as a whole, not as a known short list of harmless identifiers. Only `session_id` is read, it is hashed before storage, and no part of the field is logged. Anything that later wants to read, store or log another key from this field needs its own justification; the current posture is deliberate.
 
 ## Configuration
 

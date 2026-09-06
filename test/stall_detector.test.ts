@@ -41,6 +41,14 @@ test("the same tool hitting the same wall reports variant_thrash above a higher 
   assert.equal(verdict?.count, 5);
 });
 
+// variant_thrash means one tool hitting one wall. Five different tools that
+// happen to come back empty are five separate probes, which is what a search
+// sweep looks like, so requiring an equal tool_sig is the whole point of the
+// signal. Without that requirement this run is long enough to be reported.
+test("different tools returning the same empty result are not variant_thrash", () => {
+  assert.equal(detectStall(repeat(5, (index) => turn(`probe${index}`, "arg", "")), 3), null);
+});
+
 test("a two-call ping-pong reports alternating_calls and counts every turn", () => {
   const alternating = (n: number): HistoryTurn[] =>
     repeat(n, (index) => (index % 2 === 0 ? turn("bash", "A", "ra") : turn("bash", "B", "rb")));
