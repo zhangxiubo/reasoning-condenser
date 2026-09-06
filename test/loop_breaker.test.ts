@@ -43,12 +43,16 @@ test("a stalled history appends exactly one notice", () => {
   assert.equal(result.reason, "unchanged_result");
   assert.equal(result.request.messages.length, 3);
   assert.match(String(result.request.messages.at(-1)?.content), /Operator notice/);
+  assert.match(String(result.request.messages.at(-1)?.content), /your recommended next step/);
 });
 
 test("a clean history injects nothing", () => {
   const result = new LoopBreakerState().apply(request(), cleanHistory(), CONFIG);
 
   assert.equal(result.injected, false);
+  assert.equal(result.level, 0);
+  assert.equal(result.hard_stop, false);
+  assert.equal(result.reason, null);
   assert.equal(result.request.messages.length, 2);
 });
 
@@ -68,12 +72,16 @@ test("nothing is injected when the breaker is disabled", () => {
   assert.equal(result.injected, false);
 });
 
-test("the input request is never mutated", () => {
+test("the input request is never mutated, including on the hard-stop path", () => {
+  const breaker = new LoopBreakerState();
   const original = request({ tools: TOOLS });
   const snapshot = structuredClone(original);
 
-  new LoopBreakerState().apply(original, stalledHistory(), CONFIG);
+  breaker.apply(original, stalledHistory(), CONFIG);
+  breaker.apply(original, stalledHistory(), CONFIG);
+  const third = breaker.apply(original, stalledHistory(), CONFIG);
 
+  assert.equal(third.hard_stop, true);
   assert.deepEqual(original, snapshot);
 });
 
@@ -148,4 +156,17 @@ test("a max_injections of one removes tool affordances immediately", () => {
   assert.equal(result.hard_stop, true);
   assert.equal("tools" in result.request, false);
   assert.match(String(result.request.messages.at(-1)?.content), /Operator hard stop/);
+  assert.match(String(result.request.messages.at(-1)?.content), /cannot call tools/);
+});
+
+test("hard stop with no tools field on the request: still injected, no crash", () => {
+  const breaker = new LoopBreakerState();
+
+  breaker.apply(request(), stalledHistory(), CONFIG);
+  breaker.apply(request(), stalledHistory(), CONFIG);
+  const third = breaker.apply(request(), stalledHistory(), CONFIG);
+
+  assert.equal(third.injected, true);
+  assert.equal(third.hard_stop, true);
+  assert.equal("tools" in third.request, false);
 });
