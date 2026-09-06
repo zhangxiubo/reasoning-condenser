@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { detectStall, historyTurnLimit } from "../src/stall_detector.ts";
+import type { HistoryTurn } from "../src/normalized_history.ts";
+
+const turn = (tool: string, args: string, result: string): HistoryTurn => ({
+  tool_sig: JSON.stringify([tool]),
+  call_sig: JSON.stringify([[tool, args]]),
+  result_sig: JSON.stringify([result]),
+});
+
+const repeat = (n: number, make: (index: number) => HistoryTurn): HistoryTurn[] =>
+  [...Array(n).keys()].map(make);
+
+test("identical calls with identical results report unchanged_result", () => {
+  const verdict = detectStall(repeat(3, () => turn("bash", "tail", "same")), 3);
+
+  assert.equal(verdict?.reason, "unchanged_result");
+  assert.equal(verdict?.count, 3);
+});
+
+test("identical calls with changing results report repeated_call", () => {
+  const verdict = detectStall(repeat(3, (index) => turn("bash", "tail", `line ${index}`)), 3);
+
+  assert.equal(verdict?.reason, "repeated_call");
+  assert.equal(verdict?.count, 3);
+});
+
+test("a sweep of different searches returning nothing is not a stall", () => {
+  const verdict = detectStall(repeat(3, (index) => turn("grep", `file${index}`, "")), 3);
+
+  assert.equal(verdict, null);
+});
+
+test("the same tool hitting the same wall reports variant_thrash above a higher run", () => {
+  assert.equal(detectStall(repeat(4, (index) => turn("cat", `path${index}`, "not found")), 3), null);
+
+  const verdict = detectStall(repeat(5, (index) => turn("cat", `path${index}`, "not found")), 3);
+
+  assert.equal(verdict?.reason, "variant_thrash");
+  assert.equal(verdict?.count, 5);
+});
+
+test("a two-call ping-pong reports alternating_calls and counts every turn", () => {
+  const alternating = (n: number): HistoryTurn[] =>
+    repeat(n, (index) => (index % 2 === 0 ? turn("bash", "A", "ra") : turn("bash", "B", "rb")));
+
+  assert.equal(detectStall(alternating(3), 3)?.reason, undefined);
+  assert.equal(detectStall(alternating(4), 3)?.count, 4);
+  assert.equal(detectStall(alternating(5), 3)?.count, 5);
+  assert.equal(detectStall(alternating(6), 3)?.count, 6);
+  assert.equal(detectStall(alternating(5), 3)?.reason, "alternating_calls");
+});
+
+test("below the threshold nothing is reported", () => {
+  assert.equal(detectStall(repeat(2, () => turn("bash", "tail", "same")), 3), null);
+  assert.equal(detectStall([], 3), null);
+});
+
+test("the turn limit covers the longest run any signal consults", () => {
+  assert.equal(historyTurnLimit(3), 6);
+  assert.equal(historyTurnLimit(1), 5);
+  assert.equal(historyTurnLimit(8), 11);
+});
