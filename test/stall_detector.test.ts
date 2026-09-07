@@ -60,6 +60,65 @@ test("a two-call ping-pong reports alternating_calls and counts every turn", () 
   assert.equal(detectStall(alternating(5), 3)?.reason, "alternating_calls");
 });
 
+// The read↔test doom loop: the calls ping-pong (read, pytest, read, pytest)
+// but the pytest result varies run-to-run on its duration line ("452 passed in
+// 12.34s" vs "12.60s"). Matching on call_sig only — not result_sig — is what
+// lets the period-2 run reach the threshold despite the varying results.
+test("a two-call ping-pong with varying results still reports alternating_calls", () => {
+  const pingPong = (n: number): HistoryTurn[] =>
+    repeat(n, (index) =>
+      index % 2 === 0
+        ? turn("read", "llm_invoker.py:255", "file content")
+        : turn("bash", "pytest", `452 passed in 12.${index}s`),
+    );
+
+  assert.equal(detectStall(pingPong(3), 3), null);
+  const verdict = detectStall(pingPong(4), 3);
+  assert.equal(verdict?.reason, "alternating_calls");
+  assert.equal(verdict?.count, 4);
+  assert.equal(detectStall(pingPong(6), 3)?.count, 6);
+});
+
+// The commit→stage→test doom loop: the calls cycle with period 3 (git commit,
+// git add, pytest, repeat) and each result varies run-to-run (a new commit
+// hash, a re-staged file list, a test duration line). No period-1 or period-2
+// signal covers a 3-step cycle, so this is what cyclic_calls is for. Matching
+// on call_sig only lets the period-3 run reach its minimum (two full cycles =
+// 6 turns) despite the varying results.
+test("a three-call cycle reports cyclic_calls and counts every turn", () => {
+  const cycle = (n: number): HistoryTurn[] =>
+    repeat(n, (index) => {
+      switch (index % 3) {
+        case 0:
+          return turn("bash", "git commit", `commit ${index}`);
+        case 1:
+          return turn("bash", "git add", `staged ${index}`);
+        default:
+          return turn("bash", "pytest", `452 passed in 12.${index}s`);
+      }
+    });
+
+  // Fewer than two full cycles is not yet a demonstrated cycle.
+  assert.equal(detectStall(cycle(3), 3), null);
+  assert.equal(detectStall(cycle(4), 3), null);
+  assert.equal(detectStall(cycle(5), 3), null);
+  const verdict = detectStall(cycle(6), 3);
+  assert.equal(verdict?.reason, "cyclic_calls");
+  assert.equal(verdict?.count, 6);
+  assert.equal(detectStall(cycle(8), 3)?.count, 8);
+});
+
+test("a four-call cycle reports cyclic_calls", () => {
+  const cycle = (n: number): HistoryTurn[] =>
+    repeat(n, (index) => turn("bash", `step${index % 4}`, `result ${index}`));
+
+  // A period-4 cycle needs two full cycles (8 turns) to be demonstrated.
+  assert.equal(detectStall(cycle(7), 3), null);
+  const verdict = detectStall(cycle(8), 3);
+  assert.equal(verdict?.reason, "cyclic_calls");
+  assert.equal(verdict?.count, 8);
+});
+
 test("below the threshold nothing is reported", () => {
   assert.equal(detectStall(repeat(2, () => turn("bash", "tail", "same")), 3), null);
   assert.equal(detectStall([], 3), null);
@@ -94,7 +153,10 @@ test("the reported count belongs to the signal that actually fired", () => {
 });
 
 test("the turn limit covers the longest run any signal consults", () => {
-  assert.equal(historyTurnLimit(3), 6);
-  assert.equal(historyTurnLimit(1), 5);
+  // The floor is 2 * MAX_CYCLIC_PERIOD (10) so a period-5 cycle can be
+  // demonstrated; +1 proves the run ended. This dominates the threshold term
+  // for any realistic threshold.
+  assert.equal(historyTurnLimit(3), 11);
+  assert.equal(historyTurnLimit(1), 11);
   assert.equal(historyTurnLimit(8), 11);
 });

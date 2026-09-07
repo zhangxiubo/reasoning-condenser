@@ -4,7 +4,8 @@ export type StallReason =
   | "unchanged_result"
   | "repeated_call"
   | "variant_thrash"
-  | "alternating_calls";
+  | "alternating_calls"
+  | "cyclic_calls";
 
 export interface StallVerdict {
   reason: StallReason;
@@ -19,7 +20,8 @@ const identical: Match = (older, newer) =>
 /**
  * Length of the trailing run in which `match` holds between a turn and the
  * turn `period` steps ahead of it, walking backwards. `period` 1 is
- * adjacent-turn repetition; `period` 2 is a two-state alternation.
+ * adjacent-turn repetition; `period` 2 is a two-state alternation; `period` N
+ * is an N-step cycle.
  *
  * Periodicity at period 1 implies periodicity at period 2, so a run of
  * plain repetition genuinely is a period-2 run too. Which signal reports it
@@ -43,8 +45,8 @@ const periodicRun = (turns: HistoryTurn[], period: number, match: Match): number
 
 interface Signal {
   reason: StallReason;
-  /** Turns between the two ends of one comparison: 1 for repetition, 2 for alternation. */
-  period: number;
+  /** Periods to check: [1] for repetition, [2] for alternation, [3..N] for cycles. */
+  periods: readonly number[];
   match: Match;
   minimum: (threshold: number) => number;
 }
@@ -56,23 +58,35 @@ interface Signal {
  * `variant_thrash` covers the same tool meeting the same wall with differing
  * arguments. It needs a longer run because a search sweep looks the same until
  * it goes on too long.
+ *
+ * `alternating_calls` and `cyclic_calls` match on `call_sig` only (not
+ * `result_sig`), mirroring `repeated_call` for period 1. Tool results routinely
+ * vary run-to-run even in a hard loop — a test suite's duration line
+ * (`452 passed in 12.34s` vs `12.60s`), a request id, a timestamp — so
+ * requiring the result to be byte-identical misses the common alternation and
+ * cycle patterns. The periodic *calls* are the reliable signal.
+ *
+ * `cyclic_calls` generalizes `alternating_calls` to N-step cycles (period 3 to
+ * MAX_CYCLIC_PERIOD). A stuck model can settle into a multi-step routine
+ * (e.g. commit → stage → test → repeat) that no period-1 or period-2 signal
+ * covers; the periodic calls are still the reliable signal.
  */
 const SIGNALS: readonly Signal[] = [
   {
     reason: "unchanged_result",
-    period: 1,
+    periods: [1],
     match: identical,
     minimum: (threshold) => threshold,
   },
   {
     reason: "repeated_call",
-    period: 1,
+    periods: [1],
     match: (older, newer) => older.call_sig === newer.call_sig,
     minimum: (threshold) => threshold,
   },
   {
     reason: "variant_thrash",
-    period: 1,
+    periods: [1],
     match: (older, newer) =>
       older.tool_sig === newer.tool_sig &&
       older.result_sig === newer.result_sig &&
@@ -81,28 +95,41 @@ const SIGNALS: readonly Signal[] = [
   },
   {
     reason: "alternating_calls",
-    period: 2,
-    match: identical,
+    periods: [2],
+    match: (older, newer) => older.call_sig === newer.call_sig,
+    minimum: (threshold) => threshold,
+  },
+  {
+    reason: "cyclic_calls",
+    periods: [3, 4, 5],
+    match: (older, newer) => older.call_sig === newer.call_sig,
     minimum: (threshold) => threshold,
   },
 ];
 
+const MAX_CYCLIC_PERIOD = 5;
+
 /**
  * A run must be at least twice its period to demonstrate a repeat at all: a
- * period-2 cycle cannot be shown in fewer than two full cycles, and a
+ * period-N cycle cannot be shown in fewer than two full cycles, and a
  * period-1 repeat needs at least one comparison to have been made. This floor
  * combines with each signal's own threshold-derived minimum.
  */
-const effectiveMinimum = (signal: Signal, threshold: number): number =>
-  Math.max(signal.minimum(threshold), 2 * signal.period);
+const effectiveMinimum = (signal: Signal, threshold: number, period: number): number =>
+  Math.max(signal.minimum(threshold), 2 * period);
 
 /** Longest run any signal can consult, plus one turn to prove the run ended. */
-export const historyTurnLimit = (threshold: number): number => Math.max(threshold + 2, 4) + 1;
+export const historyTurnLimit = (threshold: number): number =>
+  Math.max(threshold + 2, 4, 2 * MAX_CYCLIC_PERIOD) + 1;
 
 export const detectStall = (turns: HistoryTurn[], threshold: number): StallVerdict | null => {
-  const hit = SIGNALS.map((signal) => ({
-    signal,
-    run: periodicRun(turns, signal.period, signal.match),
-  })).find(({ signal, run }) => run >= effectiveMinimum(signal, threshold));
-  return hit === undefined ? null : { reason: hit.signal.reason, count: hit.run };
+  for (const signal of SIGNALS) {
+    for (const period of signal.periods) {
+      const run = periodicRun(turns, period, signal.match);
+      if (run >= effectiveMinimum(signal, threshold, period)) {
+        return { reason: signal.reason, count: run };
+      }
+    }
+  }
+  return null;
 };
