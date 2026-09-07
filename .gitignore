@@ -1,5 +1,14 @@
 node_modules/
 dist/
 .env
+.env.*
 *.log
 var/
+
+# Local research and deployment artifacts (environment-specific: hardcoded
+# endpoints, ports, model names, tmux session names). Not part of the
+# model-neutral library.
+results/
+scripts/
+run-condenser.sh
+run-condenser-gemma4.sh
